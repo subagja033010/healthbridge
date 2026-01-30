@@ -1,0 +1,85 @@
+# ===== DEPENDENCIES =====
+node_modules/
+__pycache__/
+*.pyc
+.pnpm-store/
+.yarn/
+
+# ===== ENVIRONMENT FILES =====
+.env
+.env.local
+.env.*.local
+*.env
+
+# ===== DATABASE =====
+*.db
+*.sqlite
+*.sqlite3
+healthbridge.db
+
+# ===== BUILD OUTPUT =====
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ===== IDE & EDITOR =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ===== OS FILES =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== LOGS =====
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pip-log.txt
+
+# ===== CACHE =====
+.cache/
+.npm/
+.eslintcache
+.parcel-cache/
+.vite/
+
+# ===== TEMPORARY FILES =====
+*.tmp
+*.temp
+*.bak
+
+# ===== PYTHON VIRTUAL ENVIRONMENT =====
+venv/
+env/
+.venv/
+ENV/
+
+# ===== TESTING =====
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ===== DOCKER =====
+*.tar
+
+# ===== SECRETS & CREDENTIALS =====
+*.pem
+*.key
+credentials.json
+serviceAccountKey.json
+
+# ===== UPLOADED FILES (opsional, uncomment jika tidak ingin backup) =====
+# static/images/
+
+# ===== MISC =====
+.gemini/
