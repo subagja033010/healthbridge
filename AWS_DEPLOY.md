@@ -771,25 +771,282 @@ sudo cp -r dist/* /var/www/html/
 
 ---
 
-# TAHAP 11: Verifikasi
+# TAHAP 11: Test Connection (Semua Koneksi)
 
-## 11.1 Test Frontend
-Buka browser: `https://healthbridge.my.id`
+Sebelum lanjut, pastikan semua koneksi berfungsi dengan baik.
 
-## 11.2 Test Backend API
+---
+
+## 11.1 Test SSH Connection ke EC2
+
+### Test SSH Frontend
 ```bash
+ssh -i healthbridge-key.pem ubuntu@FRONTEND_IP
+# Jika berhasil, akan muncul prompt: ubuntu@ip-xxx:~$
+exit
+```
+
+### Test SSH Backend
+```bash
+ssh -i healthbridge-key.pem ubuntu@BACKEND_IP
+# Jika berhasil, akan muncul prompt: ubuntu@ip-xxx:~$
+```
+
+**✅ Expected**: Masuk ke server tanpa error
+
+**❌ Troubleshoot**:
+- `Permission denied`: Cek file .pem (`chmod 400 healthbridge-key.pem`)
+- `Connection refused`: Cek Security Group port 22 terbuka untuk IP Anda
+- `Connection timeout`: Cek instance running dan Public IP benar
+
+---
+
+## 11.2 Test Koneksi RDS PostgreSQL
+
+### Dari Backend EC2:
+```bash
+# SSH ke backend dulu
+ssh -i healthbridge-key.pem ubuntu@BACKEND_IP
+
+# Test koneksi ke RDS
+psql -h RDS_ENDPOINT -U postgres -d healthbridge -W
+```
+
+Masukkan password RDS. Jika berhasil:
+```
+healthbridge=> 
+```
+
+### Test Query:
+```sql
+-- Cek tables
+\dt
+
+-- Cek admin user
+SELECT id, email, name, role FROM users;
+
+-- Cek medicines
+SELECT id, name, price FROM medicines LIMIT 5;
+
+-- Keluar
+\q
+```
+
+**✅ Expected**: 
+- Konek berhasil
+- Tables terlihat
+- Data ada
+
+**❌ Troubleshoot**:
+- `Connection refused`: 
+  - Cek RDS Security Group izinkan port 5432 dari `healthbridge-backend-sg`
+  - Cek RDS status "Available"
+- `Password authentication failed`: Password salah
+- `Database does not exist`: Initial database name salah saat create RDS
+
+---
+
+## 11.3 Test Koneksi S3 Bucket
+
+### Dari Backend EC2:
+```bash
+# Install AWS CLI (jika belum)
+sudo apt install -y awscli
+
+# Konfigurasi credentials
+aws configure
+# Masukkan:
+# AWS Access Key ID: AKIAXXXXXXXXXX
+# AWS Secret Access Key: xxxxxxxxxxxxxxxx
+# Default region: ap-southeast-1
+# Default output: json
+
+# Test list bucket
+aws s3 ls
+
+# Test list isi bucket
+aws s3 ls s3://healthbridge-storage-UNIQUE-ID/
+
+# Test upload file
+echo "test" > test.txt
+aws s3 cp test.txt s3://healthbridge-storage-UNIQUE-ID/test.txt
+
+# Test download file
+aws s3 cp s3://healthbridge-storage-UNIQUE-ID/test.txt downloaded.txt
+cat downloaded.txt
+
+# Cleanup
+aws s3 rm s3://healthbridge-storage-UNIQUE-ID/test.txt
+rm test.txt downloaded.txt
+```
+
+**✅ Expected**: 
+- `aws s3 ls` menampilkan bucket
+- Upload dan download berhasil
+
+**❌ Troubleshoot**:
+- `Access Denied`: Cek IAM user punya policy `AmazonS3FullAccess`
+- `NoSuchBucket`: Nama bucket salah
+- `InvalidAccessKeyId`: Access key salah
+
+---
+
+## 11.4 Test Backend API
+
+### Test dari Backend EC2 (localhost):
+```bash
+# Docker
+curl http://localhost:8000/
+curl http://localhost:8000/api/medicines
+
+# Systemd
+curl http://localhost:8000/
+curl http://localhost:8000/api/medicines
+```
+
+### Test dari komputer lokal:
+```bash
+# Via IP
+curl http://BACKEND_IP:8000/
+curl http://BACKEND_IP:8000/api/medicines
+
+# Via domain (setelah Cloudflare setup)
 curl https://api.healthbridge.my.id/
+curl https://api.healthbridge.my.id/api/medicines
 ```
 
-## 11.3 Test Login Admin
+**✅ Expected**:
+```json
+{"message":"Welcome to HealthBridge AI API"}
 ```
-Email: admin@healthbridge.com
-Password: admin123
+```json
+[{"id":1,"name":"Paracetamol 500mg",...}]
 ```
 
-## 11.4 Test SSL
-- ✅ Gembok hijau di browser
-- ✅ Redirect HTTP ke HTTPS
+**❌ Troubleshoot**:
+- `Connection refused`:
+  - Docker: `docker ps` - pastikan container running
+  - Systemd: `sudo systemctl status healthbridge-backend`
+- `502 Bad Gateway`: Backend crash, cek logs
+- `Empty response`: Cek Security Group port 8000
+
+---
+
+## 11.5 Test Frontend
+
+### Test dari komputer lokal:
+```bash
+# Via IP
+curl -I http://FRONTEND_IP
+
+# Via domain (setelah Cloudflare setup)
+curl -I https://healthbridge.my.id
+```
+
+### Test via Browser:
+1. Buka `http://FRONTEND_IP` atau `https://healthbridge.my.id`
+2. Halaman landing harus muncul
+3. Coba navigasi ke halaman lain
+
+**✅ Expected**: 
+- HTTP 200 atau 301/302
+- Halaman web muncul
+
+**❌ Troubleshoot**:
+- `Connection refused`:
+  - Docker: `docker ps`
+  - Nginx: `sudo systemctl status nginx`
+- Blank page: Cek console browser (F12) untuk error JavaScript
+- API error: Cek API_URL di App.jsx sudah benar
+
+---
+
+## 11.6 Test DNS & Cloudflare
+
+### Test DNS Resolution:
+```bash
+# Test domain utama
+nslookup healthbridge.my.id
+dig healthbridge.my.id
+
+# Test subdomain API
+nslookup api.healthbridge.my.id
+dig api.healthbridge.my.id
+```
+
+**✅ Expected**: 
+- Menampilkan Cloudflare IP (bukan EC2 IP karena proxied)
+
+### Test SSL Certificate:
+```bash
+# Test HTTPS
+curl -I https://healthbridge.my.id
+curl -I https://api.healthbridge.my.id
+
+# Cek certificate
+openssl s_client -connect healthbridge.my.id:443 -servername healthbridge.my.id < /dev/null 2>/dev/null | openssl x509 -noout -subject -issuer
+```
+
+**✅ Expected**:
+- `HTTP/2 200` atau redirect
+- Issuer: Cloudflare Inc
+
+**❌ Troubleshoot**:
+- DNS tidak resolve: Tunggu propagasi (bisa sampai 24 jam)
+- SSL error: 
+  - Pastikan Cloudflare SSL mode: "Full (strict)"
+  - Cek DNS record sudah proxied (awan oranye)
+
+---
+
+## 11.7 Test End-to-End
+
+### Test Login Admin:
+1. Buka `https://healthbridge.my.id`
+2. Klik "Masuk"
+3. Login dengan:
+   ```
+   Email: admin@healthbridge.com
+   Password: admin123
+   ```
+4. Pastikan dashboard admin muncul
+
+### Test Tambah Produk:
+1. Di Admin Dashboard → Produk → Tambah Produk
+2. Isi form, upload gambar
+3. Simpan
+4. Refresh, pastikan produk muncul
+
+### Test Upload Gambar ke S3:
+1. Edit produk → Upload gambar baru
+2. SSH ke backend:
+   ```bash
+   aws s3 ls s3://healthbridge-storage-UNIQUE-ID/product_images/
+   ```
+3. Pastikan gambar ada di S3
+
+### Test Konsultasi AI:
+1. Logout dari admin
+2. Klik "Konsultasi"
+3. Masukkan gejala
+4. Pastikan AI memberikan diagnosis
+
+---
+
+## 11.8 Ringkasan Test Connection
+
+| # | Test | Command/Action | Expected |
+|---|------|----------------|----------|
+| 1 | SSH Frontend | `ssh -i key.pem ubuntu@FE_IP` | Login berhasil |
+| 2 | SSH Backend | `ssh -i key.pem ubuntu@BE_IP` | Login berhasil |
+| 3 | RDS Connection | `psql -h RDS_ENDPOINT...` | Connect & query OK |
+| 4 | S3 Upload | `aws s3 cp file s3://bucket/` | Upload berhasil |
+| 5 | Backend API | `curl http://BE_IP:8000/` | JSON response |
+| 6 | Frontend | `curl http://FE_IP` | HTML response |
+| 7 | DNS | `nslookup healthbridge.my.id` | IP resolved |
+| 8 | HTTPS | `curl https://healthbridge.my.id` | HTTP 200 + SSL OK |
+| 9 | Admin Login | Browser login | Dashboard muncul |
+| 10 | AI Consult | Submit symptoms | Diagnosis OK |
 
 ---
 
