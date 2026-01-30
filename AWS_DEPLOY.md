@@ -77,20 +77,32 @@ cp .env.example .env
 nano .env
 # Isi dengan kredensial Anda
 
-# 4. Buat folder untuk uploads
+# 4. Buat folder untuk uploads (DEVELOPMENT ONLY)
 mkdir -p static/images
 
 # 5. Database akan otomatis dibuat saat pertama kali jalan
 ```
 
+> 💡 **Catatan Penting tentang Upload Gambar:**
+> - **Development**: Gambar disimpan di `static/images/` (lokal)
+> - **Production (AWS)**: Gambar disimpan di **S3 bucket** 
+> - Backend otomatis upload ke S3 jika AWS credentials tersedia di `.env`
+> - Frontend di production harus menggunakan S3 URL untuk gambar
+
 ### Checklist Setelah Clone:
 
+**Untuk Development (Lokal):**
 - [ ] `npm install` di folder frontend
 - [ ] `pip install -r requirements.txt` di folder backend  
 - [ ] Buat file `.env` dari `.env.example`
-- [ ] Isi kredensial di `.env` (SECRET_KEY, GEMINI_API_KEY, dll)
-- [ ] `mkdir -p static/images` di folder backend
-- [ ] Edit `API_URL` di `App.jsx` jika deploy ke server
+- [ ] Isi kredensial di `.env`
+- [ ] `mkdir -p static/images` (untuk dev)
+
+**Untuk Production (AWS):**
+- [ ] Edit `API_URL` di `App.jsx` ke IP backend
+- [ ] Setup S3 bucket dan isi AWS credentials di `.env`
+- [ ] Gambar akan otomatis tersimpan di S3
+
 
 # TAHAP 1: Setup VPC & Network
 
