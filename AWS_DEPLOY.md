@@ -26,6 +26,72 @@ flowchart LR
 
 ---
 
+## ⚠️ File yang TIDAK Ada di GitHub
+
+Karena `.gitignore`, beberapa file **tidak ter-upload** ke GitHub. Anda harus **membuat/install sendiri** setelah clone.
+
+### File yang Dikecualikan:
+
+| Kategori | File/Folder | Cara Mendapatkan |
+|----------|-------------|------------------|
+| **Dependencies** | `node_modules/` | Jalankan `npm install` |
+| **Dependencies** | `__pycache__/` | Otomatis dibuat Python |
+| **Environment** | `.env` | Buat manual dari `.env.example` |
+| **Database** | `healthbridge.db` | Otomatis dibuat saat backend jalan |
+| **Uploads** | `static/images/*` | Folder kosong, isi saat upload |
+| **Build** | `dist/` | Jalankan `npm run build` |
+| **Virtual Env** | `venv/` | Buat dengan `python -m venv venv` |
+
+### Setelah Clone Repository:
+
+**Frontend:**
+```bash
+cd healthbridge-frontend-main
+
+# 1. Install dependencies (node_modules tidak ada di GitHub)
+npm install
+
+# 2. Edit API_URL jika deploy ke production
+nano src/App.jsx
+# Ganti: const API_URL = "http://127.0.0.1:8000"
+# Ke:    const API_URL = "http://<BACKEND_IP>:8000"
+
+# 3. Build untuk production
+npm run build
+```
+
+**Backend:**
+```bash
+cd healthbridge-backend-main
+
+# 1. Buat virtual environment (opsional tapi recommended)
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# atau: venv\Scripts\activate  # Windows
+
+# 2. Install dependencies (tidak ada di GitHub)
+pip install -r requirements.txt
+
+# 3. Buat file .env (WAJIB - tidak ada di GitHub!)
+cp .env.example .env
+nano .env
+# Isi dengan kredensial Anda
+
+# 4. Buat folder untuk uploads
+mkdir -p static/images
+
+# 5. Database akan otomatis dibuat saat pertama kali jalan
+```
+
+### Checklist Setelah Clone:
+
+- [ ] `npm install` di folder frontend
+- [ ] `pip install -r requirements.txt` di folder backend  
+- [ ] Buat file `.env` dari `.env.example`
+- [ ] Isi kredensial di `.env` (SECRET_KEY, GEMINI_API_KEY, dll)
+- [ ] `mkdir -p static/images` di folder backend
+- [ ] Edit `API_URL` di `App.jsx` jika deploy ke server
+
 # TAHAP 1: Setup VPC & Network
 
 ## 1.1 Create VPC
