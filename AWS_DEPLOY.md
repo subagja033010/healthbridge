@@ -1,371 +1,344 @@
 # HealthBridge AI - AWS Deployment Guide
 
-Panduan lengkap untuk deploy HealthBridge ke AWS menggunakan 2 EC2 instances + RDS PostgreSQL.
+Panduan lengkap deploy HealthBridge ke AWS dengan **2 EC2 instances** di **public subnet**.
 
 ---
 
 ## 📋 Prerequisites
 
 Sebelum memulai, pastikan Anda memiliki:
-- ✅ AWS Account dengan akses ke Console
-- ✅ Credit card terdaftar di AWS (untuk billing)
-- ✅ SSH key pair (akan dibuat di panduan ini)
-- ✅ Domain name (opsional, untuk production)
+- ✅ AWS Account aktif
+- ✅ Credit card terdaftar di AWS
+- ✅ Repository GitHub sudah di-clone
 
 ---
 
 ## 🏗️ Architecture Overview
 
 ```mermaid
-flowchart LR
-    CF["CloudFront"] --> FE["EC2 Frontend :80"]
-    FE --> BE["EC2 Backend :8000"]
-    BE --> RDS["RDS PostgreSQL :5432"]
-    BE --> S3["S3 Bucket"]
+flowchart TB
+    subgraph Internet
+        User["👤 User"]
+    end
+
+    subgraph AWS["AWS Cloud"]
+        subgraph VPC["VPC 10.0.0.0/16"]
+            subgraph PublicSubnet["Public Subnet 10.0.1.0/24"]
+                EC2_FE["🖥️ EC2 Frontend<br/>Nginx + React<br/>Port 80"]
+                EC2_BE["🖥️ EC2 Backend<br/>FastAPI<br/>Port 8000"]
+            end
+        end
+
+        S3["📦 S3 Bucket<br/>Product Images<br/>Invoices"]
+
+        CF["🌐 CloudFront CDN"]
+    end
+
+    User --> CF
+    CF --> EC2_FE
+    EC2_FE --> EC2_BE
+    EC2_BE --> S3
 ```
+
+### Komponen:
+| Komponen | Lokasi | Fungsi |
+|----------|--------|--------|
+| Frontend EC2 | Public Subnet | Serve React app via Nginx |
+| Backend EC2 | Public Subnet | FastAPI + SQLite |
+| S3 Bucket | AWS S3 | Penyimpanan gambar & invoice (production) |
+| CloudFront | CDN | Cache & HTTPS |
+
+### Catatan Storage:
+- **Development**: Gambar disimpan di `static/images/` (lokal)
+- **Production**: Gambar disimpan di **S3 Bucket** (cloud)
 
 ---
 
 ## ⚠️ File yang TIDAK Ada di GitHub
 
-Karena `.gitignore`, beberapa file **tidak ter-upload** ke GitHub. Anda harus **membuat/install sendiri** setelah clone.
+Setelah clone, Anda harus **membuat/install sendiri**:
 
-### File yang Dikecualikan:
-
-| Kategori | File/Folder | Cara Mendapatkan |
-|----------|-------------|------------------|
-| **Dependencies** | `node_modules/` | Jalankan `npm install` |
-| **Dependencies** | `__pycache__/` | Otomatis dibuat Python |
-| **Environment** | `.env` | Buat manual dari `.env.example` |
-| **Database** | `healthbridge.db` | Otomatis dibuat saat backend jalan |
-| **Uploads** | `static/images/*` | Folder kosong, isi saat upload |
-| **Build** | `dist/` | Jalankan `npm run build` |
-| **Virtual Env** | `venv/` | Buat dengan `python -m venv venv` |
-
-### Setelah Clone Repository:
-
-**Frontend:**
-```bash
-cd healthbridge-frontend-main
-
-# 1. Install dependencies (node_modules tidak ada di GitHub)
-npm install
-
-# 2. Edit API_URL jika deploy ke production
-nano src/App.jsx
-# Ganti: const API_URL = "http://127.0.0.1:8000"
-# Ke:    const API_URL = "http://<BACKEND_IP>:8000"
-
-# 3. Build untuk production
-npm run build
-```
-
-**Backend:**
-```bash
-cd healthbridge-backend-main
-
-# 1. Buat virtual environment (opsional tapi recommended)
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# atau: venv\Scripts\activate  # Windows
-
-# 2. Install dependencies (tidak ada di GitHub)
-pip install -r requirements.txt
-
-# 3. Buat file .env (WAJIB - tidak ada di GitHub!)
-cp .env.example .env
-nano .env
-# Isi dengan kredensial Anda
-
-# 4. Buat folder untuk uploads (DEVELOPMENT ONLY)
-mkdir -p static/images
-
-# 5. Database akan otomatis dibuat saat pertama kali jalan
-```
-
-> 💡 **Catatan Penting tentang Upload Gambar:**
-> - **Development**: Gambar disimpan di `static/images/` (lokal)
-> - **Production (AWS)**: Gambar disimpan di **S3 bucket** 
-> - Backend otomatis upload ke S3 jika AWS credentials tersedia di `.env`
-> - Frontend di production harus menggunakan S3 URL untuk gambar
-
-### Checklist Setelah Clone:
-
-**Untuk Development (Lokal):**
-- [ ] `npm install` di folder frontend
-- [ ] `pip install -r requirements.txt` di folder backend  
-- [ ] Buat file `.env` dari `.env.example`
-- [ ] Isi kredensial di `.env`
-- [ ] `mkdir -p static/images` (untuk dev)
-
-**Untuk Production (AWS):**
-- [ ] Edit `API_URL` di `App.jsx` ke IP backend
-- [ ] Setup S3 bucket dan isi AWS credentials di `.env`
-- [ ] Gambar akan otomatis tersimpan di S3
-
-
-# TAHAP 1: Setup VPC & Network
-
-## 1.1 Create VPC
-
-1. **Buka AWS Console** → Services → **VPC**
-2. Klik **Create VPC**
-3. Isi form:
-   - Name: `healthbridge-vpc`
-   - IPv4 CIDR: `10.0.0.0/16`
-   - Tenancy: Default
-4. Klik **Create VPC**
-
-## 1.2 Create Public Subnet (untuk EC2)
-
-1. Di VPC Dashboard → **Subnets** → **Create subnet**
-2. Isi form:
-   - VPC: `healthbridge-vpc`
-   - Subnet name: `healthbridge-public-subnet-1`
-   - Availability Zone: `ap-southeast-1a`
-   - IPv4 CIDR: `10.0.1.0/24`
-3. Klik **Create subnet**
-
-## 1.3 Create Private Subnets (untuk RDS)
-
-> ⚠️ **PENTING:** RDS memerlukan minimal 2 subnet di 2 Availability Zone berbeda.
-
-**Subnet 1:**
-1. **Create subnet**
-2. Isi:
-   - VPC: `healthbridge-vpc`
-   - Subnet name: `healthbridge-private-subnet-1`
-   - Availability Zone: `ap-southeast-1a`
-   - IPv4 CIDR: `10.0.2.0/24`
-
-**Subnet 2:**
-1. **Create subnet**
-2. Isi:
-   - VPC: `healthbridge-vpc`
-   - Subnet name: `healthbridge-private-subnet-2`
-   - Availability Zone: `ap-southeast-1b`
-   - IPv4 CIDR: `10.0.3.0/24`
-
-## 1.4 Create Internet Gateway
-
-1. **Internet Gateways** → **Create internet gateway**
-2. Name: `healthbridge-igw`
-3. Klik **Create**
-4. Pilih gateway → **Actions** → **Attach to VPC**
-5. Pilih `healthbridge-vpc` → **Attach**
-
-## 1.5 Configure Route Table untuk Public Subnet
-
-1. **Route Tables** → Pilih route table untuk `healthbridge-vpc`
-2. Tab **Routes** → **Edit routes**
-3. **Add route**:
-   - Destination: `0.0.0.0/0`
-   - Target: `healthbridge-igw`
-4. **Save routes**
-5. Tab **Subnet associations** → **Edit subnet associations**
-6. Pilih `healthbridge-public-subnet-1` → **Save**
-
-## 1.6 Enable Auto-assign Public IP
-
-1. **Subnets** → Pilih `healthbridge-public-subnet-1`
-2. **Actions** → **Edit subnet settings**
-3. ✅ Enable **Auto-assign public IPv4 address**
-4. **Save**
+| File/Folder | Cara Mendapatkan |
+|-------------|------------------|
+| `node_modules/` | `npm install` |
+| `.env` | Buat dari `.env.example` |
+| `healthbridge.db` | Otomatis dibuat saat backend jalan |
+| `static/images/` | `mkdir -p static/images` |
+| `venv/` | `python -m venv venv` |
 
 ---
 
-# TAHAP 2: Create Security Groups
+# TAHAP 1: Buat VPC
 
-## 2.1 Security Group untuk Frontend
+## 1.1 Buka AWS Console
+1. Buka browser → https://console.aws.amazon.com
+2. Login dengan akun AWS Anda
+3. Pastikan region: **Asia Pacific (Singapore) ap-southeast-1**
+   - Klik dropdown region di pojok kanan atas
+   - Pilih **Asia Pacific (Singapore)**
 
-1. **EC2** → **Security Groups** → **Create security group**
-2. Isi:
-   - Name: `healthbridge-frontend-sg`
-   - Description: Frontend security group
-   - VPC: `healthbridge-vpc`
+## 1.2 Buat VPC Baru
+1. Ketik **VPC** di search bar → Klik **VPC**
+2. Klik tombol **Create VPC** (tombol oranye)
+3. Pilih **VPC only** (bukan "VPC and more")
+4. Isi form:
+   ```
+   Name tag: healthbridge-vpc
+   IPv4 CIDR block: 10.0.0.0/16
+   IPv6 CIDR block: No IPv6 CIDR block
+   Tenancy: Default
+   ```
+5. Klik **Create VPC**
+6. ✅ VPC berhasil dibuat! Catat **VPC ID** (vpc-xxxxxxxx)
 
-3. **Inbound rules** (Add rule):
+## 1.3 Buat Subnet
+1. Di sidebar kiri, klik **Subnets**
+2. Klik **Create subnet**
+3. Isi form:
+   ```
+   VPC ID: Pilih healthbridge-vpc
+   Subnet name: healthbridge-public-subnet
+   Availability Zone: ap-southeast-1a
+   IPv4 CIDR block: 10.0.1.0/24
+   ```
+4. Klik **Create subnet**
+
+## 1.4 Buat Internet Gateway
+1. Di sidebar kiri, klik **Internet Gateways**
+2. Klik **Create internet gateway**
+3. Isi form:
+   ```
+   Name tag: healthbridge-igw
+   ```
+4. Klik **Create internet gateway**
+5. Klik tombol **Actions** → **Attach to VPC**
+6. Pilih **healthbridge-vpc** → Klik **Attach internet gateway**
+
+## 1.5 Konfigurasi Route Table
+1. Di sidebar kiri, klik **Route Tables**
+2. Cari route table yang VPC-nya `healthbridge-vpc` → Klik ID-nya
+3. Klik tab **Routes** → **Edit routes**
+4. Klik **Add route**:
+   ```
+   Destination: 0.0.0.0/0
+   Target: Internet Gateway → pilih healthbridge-igw
+   ```
+5. Klik **Save changes**
+6. Klik tab **Subnet associations** → **Edit subnet associations**
+7. Centang ✅ `healthbridge-public-subnet`
+8. Klik **Save associations**
+
+## 1.6 Enable Auto-assign Public IP
+1. Klik **Subnets** di sidebar
+2. Klik `healthbridge-public-subnet`
+3. Klik **Actions** → **Edit subnet settings**
+4. Centang ✅ **Enable auto-assign public IPv4 address**
+5. Klik **Save**
+
+---
+
+# TAHAP 2: Buat Security Groups
+
+## 2.1 Security Group Frontend
+1. Buka **EC2** (ketik di search bar)
+2. Di sidebar kiri, klik **Security Groups**
+3. Klik **Create security group**
+4. Isi form:
+   ```
+   Security group name: healthbridge-frontend-sg
+   Description: Security group for frontend
+   VPC: healthbridge-vpc
+   ```
+5. **Inbound rules** → Klik **Add rule** 3x:
 
    | Type | Port | Source | Description |
    |------|------|--------|-------------|
-   | HTTP | 80 | 0.0.0.0/0 | Web traffic |
+   | HTTP | 80 | 0.0.0.0/0 | Web access |
    | HTTPS | 443 | 0.0.0.0/0 | Secure web |
-   | SSH | 22 | My IP | Admin access |
+   | SSH | 22 | My IP | Admin SSH |
 
-4. **Create security group**
+6. Klik **Create security group**
 
-## 2.2 Security Group untuk Backend
-
-1. **Create security group**
-2. Isi:
-   - Name: `healthbridge-backend-sg`
-   - Description: Backend security group
-   - VPC: `healthbridge-vpc`
-
-3. **Inbound rules**:
+## 2.2 Security Group Backend
+1. Klik **Create security group** lagi
+2. Isi form:
+   ```
+   Security group name: healthbridge-backend-sg
+   Description: Security group for backend
+   VPC: healthbridge-vpc
+   ```
+3. **Inbound rules** → Klik **Add rule** 2x:
 
    | Type | Port | Source | Description |
    |------|------|--------|-------------|
    | Custom TCP | 8000 | 0.0.0.0/0 | API access |
-   | SSH | 22 | My IP | Admin access |
+   | SSH | 22 | My IP | Admin SSH |
 
-4. **Create security group**
-
-## 2.3 Security Group untuk RDS
-
-1. **Create security group**
-2. Isi:
-   - Name: `healthbridge-rds-sg`
-   - Description: RDS PostgreSQL security group
-   - VPC: `healthbridge-vpc`
-
-3. **Inbound rules**:
-
-   | Type | Port | Source | Description |
-   |------|------|--------|-------------|
-   | PostgreSQL | 5432 | healthbridge-backend-sg | Backend only |
-
-   > 💡 Di field Source, ketik nama security group backend untuk referensi.
-
-4. **Create security group**
+4. Klik **Create security group**
 
 ---
 
-# TAHAP 3: Setup RDS PostgreSQL
+# TAHAP 3: Buat Key Pair
 
-## 3.1 Create DB Subnet Group
-
-1. **RDS** → **Subnet groups** → **Create DB subnet group**
-2. Isi:
-   - Name: `healthbridge-db-subnet-group`
-   - Description: Subnet group for HealthBridge RDS
-   - VPC: `healthbridge-vpc`
-3. **Add subnets:**
-   - Availability Zones: `ap-southeast-1a`, `ap-southeast-1b`
-   - Subnets: Pilih `healthbridge-private-subnet-1` dan `healthbridge-private-subnet-2`
-4. **Create**
-
-## 3.2 Create RDS Instance
-
-1. **RDS** → **Databases** → **Create database**
-2. Isi form:
-
-   **Engine options:**
-   - Engine: PostgreSQL
-   - Version: PostgreSQL 15.x
-
-   **Templates:**
-   - Free tier (untuk development) ATAU
-   - Production (untuk production)
-
-   **Settings:**
-   - DB instance identifier: `healthbridge-db`
-   - Master username: `admin`
-   - Master password: `YourSecurePassword123!` (catat ini!)
-
-   **Instance configuration:**
-   - DB instance class: `db.t3.micro` (Free tier eligible)
-
-   **Storage:**
-   - Storage type: gp2
-   - Allocated storage: 20 GiB
-   - ❌ Enable storage autoscaling (disable untuk hemat biaya)
-
-   **Connectivity:**
-   - VPC: `healthbridge-vpc`
-   - DB subnet group: `healthbridge-db-subnet-group`
-   - Public access: **No** ⚠️ (penting untuk keamanan!)
-   - VPC security group: Pilih `healthbridge-rds-sg`
-   - Availability Zone: No preference
-
-   **Database authentication:**
-   - Password authentication
-
-   **Additional configuration:**
-   - Initial database name: `healthbridge`
-   - ❌ Enable automated backups (disable untuk dev, enable untuk prod)
-   - ❌ Enable Enhanced monitoring (disable untuk hemat biaya)
-
-3. **Create database**
-
-## 3.3 Tunggu RDS Available
-
-Tunggu status RDS berubah dari "Creating" ke "Available" (5-10 menit).
-
-## 3.4 Catat RDS Endpoint
-
-1. Klik database `healthbridge-db`
-2. Di tab **Connectivity & security**, catat:
-   - **Endpoint**: `healthbridge-db.xxxxx.ap-southeast-1.rds.amazonaws.com`
-   - **Port**: `5432`
+1. Di sidebar EC2, klik **Key Pairs**
+2. Klik **Create key pair**
+3. Isi form:
+   ```
+   Name: healthbridge-key
+   Key pair type: RSA
+   Private key file format: .pem
+   ```
+4. Klik **Create key pair**
+5. ⚠️ **PENTING**: File `healthbridge-key.pem` akan terdownload otomatis
+6. Simpan file ini di tempat aman! Tidak bisa didownload ulang!
 
 ---
 
-# TAHAP 4: Create EC2 Instances
+# TAHAP 4: Launch EC2 Frontend
 
-## 4.1 Create Key Pair
+## 4.1 Buat Instance
+1. Di sidebar EC2, klik **Instances**
+2. Klik **Launch instances**
+3. Isi form:
 
-1. **EC2** → **Key Pairs** → **Create key pair**
-2. Isi:
-   - Name: `healthbridge-key`
-   - Type: RSA
-   - Format: `.pem` (untuk Linux/Mac) atau `.ppk` (untuk Windows PuTTY)
-3. **Create** → File akan terdownload otomatis
-4. **PENTING**: Simpan file ini dengan aman!
-
-## 4.2 Launch Frontend EC2
-
-1. **EC2** → **Instances** → **Launch instances**
-2. Isi form:
-
-   **Name and tags:**
-   - Name: `healthbridge-frontend`
+   **Name:**
+   ```
+   healthbridge-frontend
+   ```
 
    **Application and OS Images:**
-   - AMI: Ubuntu Server 22.04 LTS (Free tier eligible)
+   - Klik **Ubuntu**
+   - Pilih **Ubuntu Server 22.04 LTS (Free tier eligible)**
 
    **Instance type:**
-   - t2.micro (Free tier) atau t3.micro
+   - Pilih **t2.micro** (Free tier eligible)
 
    **Key pair:**
-   - Select: `healthbridge-key`
+   - Pilih **healthbridge-key**
 
-   **Network settings:** (Edit)
-   - VPC: `healthbridge-vpc`
-   - Subnet: `healthbridge-public-subnet-1`
-   - Auto-assign public IP: Enable
-   - Security group: `healthbridge-frontend-sg`
+   **Network settings:** Klik **Edit**
+   ```
+   VPC: healthbridge-vpc
+   Subnet: healthbridge-public-subnet
+   Auto-assign public IP: Enable
+   Firewall: Select existing security group
+   Security groups: healthbridge-frontend-sg
+   ```
 
    **Configure storage:**
    - 8 GiB gp2 (default)
 
-3. **Launch instance**
+4. Klik **Launch instance**
 
-## 4.3 Launch Backend EC2
-
-Ulangi langkah yang sama dengan perbedaan:
-- Name: `healthbridge-backend`
-- Security group: `healthbridge-backend-sg`
+## 4.2 Catat Public IP
+1. Tunggu instance berstatus **Running**
+2. Klik instance → Catat **Public IPv4 address**
+   ```
+   Contoh: 54.123.45.67
+   ```
 
 ---
 
-# TAHAP 5: Setup Frontend Server
+# TAHAP 5: Launch EC2 Backend
 
-## 5.1 Connect via SSH
+Ulangi langkah TAHAP 4 dengan perbedaan:
 
-**Linux/Mac:**
+```
+Name: healthbridge-backend
+Security group: healthbridge-backend-sg
+```
+
+Catat **Public IPv4 address** backend:
+```
+Contoh: 54.234.56.78
+```
+
+---
+
+# TAHAP 6: Setup S3 Bucket
+
+## 6.1 Buat Bucket
+1. Ketik **S3** di search bar → Klik **S3**
+2. Klik **Create bucket**
+3. Isi form:
+   ```
+   Bucket name: healthbridge-storage-UNIQUE-ID
+   (Ganti UNIQUE-ID dengan angka random, misal: healthbridge-storage-12345)
+   
+   AWS Region: Asia Pacific (Singapore) ap-southeast-1
+   ```
+4. **Object Ownership**: ACLs disabled (recommended)
+5. **Block Public Access**: 
+   - ❌ Uncheck "Block all public access"
+   - ✅ Centang "I acknowledge..."
+6. Klik **Create bucket**
+
+## 6.2 Buat Folder di Bucket
+1. Klik bucket yang baru dibuat
+2. Klik **Create folder**
+3. Buat folder:
+   - `product_images/`
+   - `invoices/`
+   - `orders/`
+
+## 6.3 Set Bucket Policy (Public Read untuk Images)
+1. Klik tab **Permissions**
+2. Scroll ke **Bucket policy** → Klik **Edit**
+3. Paste policy ini (ganti BUCKET-NAME):
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "PublicReadProductImages",
+            "Effect": "Allow",
+            "Principal": "*",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::BUCKET-NAME/product_images/*"
+        }
+    ]
+}
+```
+4. Klik **Save changes**
+
+## 6.4 Buat IAM User untuk S3
+1. Ketik **IAM** di search bar → Klik **IAM**
+2. Klik **Users** → **Create user**
+3. Isi:
+   ```
+   User name: healthbridge-s3-user
+   ```
+4. Klik **Next**
+5. Pilih **Attach policies directly**
+6. Cari dan centang: **AmazonS3FullAccess**
+7. Klik **Next** → **Create user**
+8. Klik user yang baru dibuat
+9. Klik tab **Security credentials**
+10. Scroll ke **Access keys** → **Create access key**
+11. Pilih **Application running outside AWS**
+12. Klik **Create access key**
+13. ⚠️ **PENTING**: Catat atau download:
+    ```
+    Access key ID: AKIAXXXXXXXXXXXXXXXXX
+    Secret access key: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    ```
+
+---
+
+# TAHAP 7: Setup Frontend Server
+
+## 7.1 Connect SSH
 ```bash
+# Linux/Mac:
 chmod 400 healthbridge-key.pem
-ssh -i healthbridge-key.pem ubuntu@<FRONTEND_PUBLIC_IP>
+ssh -i healthbridge-key.pem ubuntu@FRONTEND_IP
+
+# Windows PowerShell:
+ssh -i healthbridge-key.pem ubuntu@FRONTEND_IP
 ```
+Ganti `FRONTEND_IP` dengan IP frontend (contoh: 54.123.45.67)
 
-**Windows (PowerShell):**
-```powershell
-ssh -i healthbridge-key.pem ubuntu@<FRONTEND_PUBLIC_IP>
-```
-
-## 5.2 Install Docker
-
+## 7.2 Install Docker
 ```bash
 # Update system
 sudo apt update && sudo apt upgrade -y
@@ -377,41 +350,41 @@ sudo sh get-docker.sh
 # Add user to docker group
 sudo usermod -aG docker ubuntu
 
-# Logout dan login kembali
+# PENTING: Logout dan login kembali
 exit
 ```
 
-SSH kembali:
+## 7.3 SSH Kembali
 ```bash
-ssh -i healthbridge-key.pem ubuntu@<FRONTEND_PUBLIC_IP>
+ssh -i healthbridge-key.pem ubuntu@FRONTEND_IP
 ```
 
-## 5.3 Clone & Build Frontend
-
+## 7.4 Clone Repository
 ```bash
-# Clone repository
-git clone https://github.com/YOUR_USERNAME/healthbridge-frontend-main.git
-cd healthbridge-frontend-main
+git clone https://github.com/subagja033010/healthbridge.git
+cd healthbridge/healthbridge-frontend-main
+```
 
-# PENTING: Update API URL sebelum build
+## 7.5 Edit API URL
+```bash
 nano src/App.jsx
 ```
 
-**Edit baris berikut:**
+Cari baris:
 ```javascript
-// Ganti ini:
 const API_URL = "http://127.0.0.1:8000";
-
-// Menjadi (gunakan IP backend):
-const API_URL = "http://<BACKEND_PUBLIC_IP>:8000";
 ```
 
-Simpan dengan `Ctrl+X`, `Y`, `Enter`
+Ganti menjadi (gunakan IP backend Anda):
+```javascript
+const API_URL = "http://BACKEND_IP:8000";
+```
 
-## 5.4 Build & Run Docker
+Simpan: `Ctrl+X` → `Y` → `Enter`
 
+## 7.6 Build & Run
 ```bash
-# Build image
+# Build Docker image
 docker build -t healthbridge-frontend .
 
 # Run container
@@ -425,110 +398,87 @@ docker run -d \
 docker ps
 ```
 
-## 5.5 Verify Frontend
-
-Buka browser: `http://<FRONTEND_PUBLIC_IP>`
+## 7.7 Test
+Buka browser: `http://FRONTEND_IP`
 
 ---
 
-# TAHAP 6: Setup Backend Server
+# TAHAP 8: Setup Backend Server
 
-## 6.1 Connect via SSH
-
+## 8.1 Connect SSH
 ```bash
-ssh -i healthbridge-key.pem ubuntu@<BACKEND_PUBLIC_IP>
+ssh -i healthbridge-key.pem ubuntu@BACKEND_IP
 ```
 
-## 6.2 Install Docker
-
+## 8.2 Install Docker
 ```bash
-# Update system
 sudo apt update && sudo apt upgrade -y
-
-# Install Docker
 curl -fsSL https://get.docker.com -o get-docker.sh
 sudo sh get-docker.sh
-
-# Add user to docker group
 sudo usermod -aG docker ubuntu
-
-# Logout dan login kembali
 exit
 ```
 
-SSH kembali:
+## 8.3 SSH Kembali
 ```bash
-ssh -i healthbridge-key.pem ubuntu@<BACKEND_PUBLIC_IP>
+ssh -i healthbridge-key.pem ubuntu@BACKEND_IP
 ```
 
-## 6.3 Clone & Configure Backend
-
+## 8.4 Clone Repository
 ```bash
-# Clone repository
-git clone https://github.com/YOUR_USERNAME/healthbridge-backend-main.git
-cd healthbridge-backend-main
+git clone https://github.com/subagja033010/healthbridge.git
+cd healthbridge/healthbridge-backend-main
+```
 
-# Create .env file
+## 8.5 Buat File .env
+```bash
 nano .env
 ```
 
-**Isi .env (dengan RDS PostgreSQL):**
+Isi dengan kredensial Anda:
 ```env
 # JWT Authentication
-SECRET_KEY=your-super-secret-key-change-this-in-production
+SECRET_KEY=ganti-dengan-random-string-yang-panjang-dan-aman
 
-# Gemini AI
+# Google Gemini AI (untuk diagnosis AI)
 GEMINI_API_KEY=your-gemini-api-key
 
-# Database - RDS PostgreSQL
-DATABASE_URL=postgresql://admin:YourSecurePassword123!@healthbridge-db.xxxxx.ap-southeast-1.rds.amazonaws.com:5432/healthbridge
+# Database (SQLite untuk production sederhana)
+DATABASE_URL=sqlite:///./healthbridge.db
 
-# AWS S3
-AWS_ACCESS_KEY_ID=your-aws-access-key
-AWS_SECRET_ACCESS_KEY=your-aws-secret-key
+# AWS S3 (untuk menyimpan gambar di production)
+AWS_ACCESS_KEY_ID=AKIAXXXXXXXXXXXXXXXXX
+AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 AWS_REGION=ap-southeast-1
-AWS_S3_BUCKET=healthbridge-storage
+AWS_S3_BUCKET=healthbridge-storage-UNIQUE-ID
 ```
 
-> ⚠️ **PENTING:** Ganti `healthbridge-db.xxxxx.ap-southeast-1.rds.amazonaws.com` dengan RDS endpoint Anda!
+Simpan: `Ctrl+X` → `Y` → `Enter`
 
-Simpan dengan `Ctrl+X`, `Y`, `Enter`
-
-## 6.4 Update CORS Settings
-
+## 8.6 Edit CORS di main.py
 ```bash
 nano main.py
 ```
 
-Cari bagian CORS dan tambahkan frontend IP:
+Cari bagian `allow_origins` dan tambahkan IP frontend:
 ```python
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://<FRONTEND_PUBLIC_IP>",  # Add this
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+allow_origins=[
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://FRONTEND_IP",  # Tambahkan ini
+],
 ```
 
-## 6.5 Install PostgreSQL Dependencies
+Simpan: `Ctrl+X` → `Y` → `Enter`
 
-Tambahkan ke `requirements.txt`:
+## 8.7 Buat Folder Static
 ```bash
-echo "psycopg2-binary" >> requirements.txt
-```
-
-## 6.6 Build & Run Docker
-
-```bash
-# Create directories for persistence
 mkdir -p static/images
+```
 
-# Build image
+## 8.8 Build & Run
+```bash
+# Build Docker image
 docker build -t healthbridge-backend .
 
 # Run container
@@ -536,6 +486,7 @@ docker run -d \
   --name backend \
   -p 8000:8000 \
   -v $(pwd)/static:/app/static \
+  -v $(pwd)/healthbridge.db:/app/healthbridge.db \
   --env-file .env \
   --restart unless-stopped \
   healthbridge-backend
@@ -545,217 +496,115 @@ docker ps
 docker logs backend
 ```
 
-## 6.7 Verify Backend & Database Connection
-
+## 8.9 Test API
 ```bash
-# Check logs untuk koneksi database
-docker logs backend | grep -i database
-
-# Test API
 curl http://localhost:8000/
 # Output: {"message":"Welcome to HealthBridge AI API"}
 ```
 
 ---
 
-# TAHAP 7: Setup S3 Bucket
+# TAHAP 9: Setup CloudFront (CDN)
 
-## 7.1 Create S3 Bucket
-
-1. **AWS Console** → **S3** → **Create bucket**
-2. Isi:
-   - Bucket name: `healthbridge-storage-YOUR-UNIQUE-ID`
-   - Region: `ap-southeast-1`
-   - Object Ownership: ACLs disabled
-   - Block Public Access: Uncheck "Block all public access" (untuk gambar produk)
-3. **Create bucket**
-
-## 7.2 Configure Bucket Policy
-
-1. Pilih bucket → **Permissions** → **Bucket policy**
-2. Paste:
-
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "PublicReadProductImages",
-            "Effect": "Allow",
-            "Principal": "*",
-            "Action": "s3:GetObject",
-            "Resource": "arn:aws:s3:::healthbridge-storage-YOUR-UNIQUE-ID/product_images/*"
-        }
-    ]
-}
-```
-
-3. **Save changes**
-
-## 7.3 Create IAM User for S3 Access
-
-1. **IAM** → **Users** → **Create user**
-2. User name: `healthbridge-s3-user`
-3. **Attach policies directly** → Search: `AmazonS3FullAccess`
-4. **Create user**
-5. Pilih user → **Security credentials** → **Create access key**
-6. Use case: **Application running outside AWS**
-7. **Create** → Download CSV (simpan dengan aman!)
-
-## 7.4 Update Backend .env
-
-```bash
-ssh -i healthbridge-key.pem ubuntu@<BACKEND_PUBLIC_IP>
-cd healthbridge-backend-main
-nano .env
-```
-
-Update AWS credentials:
-```env
-AWS_ACCESS_KEY_ID=AKIAXXXXXXXXXXXXXXXXX
-AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-AWS_S3_BUCKET=healthbridge-storage-YOUR-UNIQUE-ID
-```
-
-Restart container:
-```bash
-docker restart backend
-```
+## 9.1 Buat Distribution
+1. Ketik **CloudFront** di search bar
+2. Klik **Create distribution**
+3. **Origin:**
+   ```
+   Origin domain: FRONTEND_IP (IP frontend Anda)
+   Protocol: HTTP only
+   ```
+4. **Default cache behavior:**
+   ```
+   Viewer protocol policy: Redirect HTTP to HTTPS
+   Allowed HTTP methods: GET, HEAD
+   Cache policy: CachingOptimized
+   ```
+5. **Settings:**
+   ```
+   Price class: Use only North America and Europe
+   ```
+6. Klik **Create distribution**
+7. Tunggu status **Deployed** (5-15 menit)
+8. Catat **Distribution domain name**:
+   ```
+   Contoh: d1234abcd.cloudfront.net
+   ```
 
 ---
 
-# TAHAP 8: Setup CloudFront (CDN)
+# TAHAP 10: Verifikasi
 
-## 8.1 Create Distribution
+## 10.1 Test Frontend
+1. Buka `http://FRONTEND_IP`
+2. Atau `https://d1234abcd.cloudfront.net`
+3. Pastikan halaman landing muncul
 
-1. **CloudFront** → **Create distribution**
-2. **Origin:**
-   - Origin domain: `<FRONTEND_PUBLIC_IP>` atau S3 bucket
-   - Protocol: HTTP only
-   - Origin path: (kosong)
-
-3. **Default cache behavior:**
-   - Viewer protocol policy: Redirect HTTP to HTTPS
-   - Allowed HTTP methods: GET, HEAD
-   - Cache policy: CachingOptimized
-
-4. **Settings:**
-   - Price class: Use only North America and Europe (lebih murah)
-   - Alternate domain name (CNAME): (opsional, jika punya domain)
-   - SSL certificate: Default CloudFront certificate
-
-5. **Create distribution**
-
-## 8.2 Wait for Deployment
-
-Tunggu status berubah dari "Deploying" ke "Enabled" (5-15 menit)
-
-## 8.3 Access via CloudFront
-
-Setelah deployed, akses via:
-```
-https://d1234567890abc.cloudfront.net
-```
-
----
-
-# TAHAP 9: Verification & Testing
-
-## 9.1 Test Frontend
-
-1. Buka `http://<FRONTEND_PUBLIC_IP>`
-2. Pastikan halaman landing muncul
-3. Coba navigasi ke berbagai halaman
-
-## 9.2 Test Backend API
-
-```bash
-# Test dari local
-curl http://<BACKEND_PUBLIC_IP>:8000/api/medicines
-
-# Test dari frontend EC2
-ssh -i healthbridge-key.pem ubuntu@<FRONTEND_PUBLIC_IP>
-curl http://<BACKEND_PUBLIC_IP>:8000/api/medicines
-```
-
-## 9.3 Test Database Connection
-
-```bash
-# Di backend server
-docker logs backend | grep -i "database\|postgres\|connected"
-```
-
-## 9.4 Test Admin Login
-
-1. Buka `http://<FRONTEND_PUBLIC_IP>`
+## 10.2 Test Login Admin
+1. Klik **Masuk**
 2. Login dengan:
-   - Email: `admin@healthbridge.com`
-   - Password: `admin123`
-3. Verifikasi dashboard admin muncul
+   ```
+   Email: admin@healthbridge.com
+   Password: admin123
+   ```
+3. Pastikan dashboard admin muncul
 
-## 9.5 Test Image Upload
+## 10.3 Test Upload Gambar
+1. Di Admin → Produk → Edit produk
+2. Upload gambar baru
+3. Verifikasi gambar muncul
+4. Cek S3 bucket → folder `product_images/`
 
-1. Login sebagai admin
-2. Kelola Produk → Edit produk
-3. Upload gambar baru
-4. Verifikasi gambar muncul dan tersimpan ke S3
+## 10.4 Test Konsultasi AI
+1. Klik **Konsultasi**
+2. Masukkan gejala
+3. Verifikasi AI memberikan diagnosis
 
 ---
 
-# 💰 Cost Estimation (Per Month)
+# 💰 Estimasi Biaya (Per Bulan)
 
-| Service | Specification | Cost (USD) |
-|---------|---------------|------------|
-| EC2 t2.micro (2x) | 730 hours | $0-18.70 |
-| RDS db.t3.micro | Single-AZ | $12.41 |
+| Service | Spec | Biaya (USD) |
+|---------|------|-------------|
+| EC2 t2.micro (2x) | 730 jam | $0 (Free Tier) |
 | S3 Storage | 5GB | $0.12 |
 | CloudFront | 50GB transfer | $4.25 |
 | Data Transfer | 10GB | $0.90 |
-| **TOTAL** | | **~$18-37/month** |
+| **TOTAL** | | **~$5-10/bulan** |
 
-> 💡 **Free Tier:** EC2 dan RDS gratis 12 bulan pertama (dengan batasan).
+> 💡 **Free Tier**: EC2 gratis 750 jam/bulan selama 12 bulan pertama
 
 ---
 
-# 🔧 Maintenance Commands
+# 🔧 Maintenance
 
 ## View Logs
 ```bash
-# Frontend
 docker logs -f frontend
-
-# Backend
 docker logs -f backend
 ```
 
-## Restart Containers
+## Restart
 ```bash
 docker restart frontend
 docker restart backend
 ```
 
-## Update Application
+## Update Aplikasi
 ```bash
 # Frontend
-cd healthbridge-frontend-main
+cd healthbridge/healthbridge-frontend-main
 git pull
-docker build -t healthbridge-frontend .
 docker stop frontend && docker rm frontend
+docker build -t healthbridge-frontend .
 docker run -d --name frontend -p 80:80 --restart unless-stopped healthbridge-frontend
 
 # Backend
-cd healthbridge-backend-main
+cd healthbridge/healthbridge-backend-main
 git pull
-docker build -t healthbridge-backend .
 docker stop backend && docker rm backend
-docker run -d --name backend -p 8000:8000 -v $(pwd)/static:/app/static --env-file .env --restart unless-stopped healthbridge-backend
-```
-
-## Backup Database (RDS)
-```bash
-# RDS otomatis backup jika enabled
-# Manual snapshot via Console:
-# RDS → Databases → healthbridge-db → Actions → Take snapshot
+docker build -t healthbridge-backend .
+docker run -d --name backend -p 8000:8000 -v $(pwd)/static:/app/static -v $(pwd)/healthbridge.db:/app/healthbridge.db --env-file .env --restart unless-stopped healthbridge-backend
 ```
 
 ---
@@ -768,21 +617,20 @@ docker logs backend
 docker logs frontend
 ```
 
-## Database Connection Error
+## CORS Error di browser
+Pastikan IP frontend ada di `allow_origins` di `main.py`
+
+## Tidak bisa SSH
+- Cek Security Group port 22 terbuka
+- Cek file .pem permission: `chmod 400 healthbridge-key.pem`
+
+## Gambar tidak muncul
+- Cek S3 bucket policy sudah benar
+- Cek AWS credentials di .env sudah benar
+- Cek folder `static/images/` ada
+
+## API Error 500
 ```bash
-# Check RDS endpoint benar
-# Check security group RDS mengizinkan backend
-# Check username/password benar
-docker logs backend | grep -i "database\|error\|connection"
+docker logs backend
 ```
-
-## CORS Error
-Pastikan frontend IP ada di allow_origins di main.py
-
-## Cannot connect to backend
-- Check security group port 8000 open
-- Check backend container running: `docker ps`
-
-## Images not loading
-- Check S3 bucket policy
-- Check AWS credentials in .env
+Biasanya masalah database atau environment variables
