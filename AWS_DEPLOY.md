@@ -378,17 +378,45 @@ Lakukan untuk **KEDUA** subnet:
 
 # TAHAP 6: Launch EC2 Backend
 
-Ulangi langkah TAHAP 5 dengan perbedaan:
+## 6.1 Buat Instance
+1. Di sidebar EC2, klik **Instances**
+2. Klik **Launch instances**
+3. Isi form:
 
-```
-Name: healthbridge-backend
-Security group: healthbridge-backend-sg
-```
+   **Name:**
+   ```
+   healthbridge-backend
+   ```
 
-Catat **Public IPv4 address** backend:
-```
-Contoh: 54.234.56.78 (BACKEND_IP)
-```
+   **Application and OS Images:**
+   - Klik **Ubuntu**
+   - Pilih **Ubuntu Server 22.04 LTS (Free tier eligible)**
+
+   **Instance type:**
+   - Pilih **t2.micro** (Free tier eligible)
+
+   **Key pair:**
+   - Pilih **healthbridge-key**
+
+   **Network settings:** Klik **Edit**
+   ```
+   VPC: healthbridge-vpc
+   Subnet: healthbridge-public-subnet-1
+   Auto-assign public IP: Enable
+   Firewall: Select existing security group
+   Security groups: healthbridge-backend-sg
+   ```
+
+   > 💡 **Catatan Subnet**: Backend menggunakan **subnet-1** yang sama dengan frontend agar bisa berdampingan. Subnet-2 digunakan khusus untuk RDS.
+
+4. Klik **Launch instance**
+
+## 6.2 Catat Public IP
+1. Tunggu instance berstatus **Running**
+2. Klik instance → Catat **Public IPv4 address**
+   ```
+   Contoh: 54.234.56.78 (BACKEND_IP)
+   ```
 
 ---
 
