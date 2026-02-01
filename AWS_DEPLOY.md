@@ -624,15 +624,33 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 
-### 9B.3 Clone & Build
+### 9B.3 Clone & Configure API URL
 ```bash
 git clone https://github.com/subagja033010/healthbridge.git
 cd healthbridge/healthbridge-frontend-main
 
-# Edit API URL
+# Edit API URL untuk koneksi ke Backend
 nano src/App.jsx
-# Ganti API_URL ke: https://api.healthbridge.my.id
+```
 
+**Cari baris ini** (biasanya di bagian atas file):
+```javascript
+const API_URL = "http://localhost:8000";
+```
+
+**Ganti menjadi:**
+```javascript
+// Jika sudah setup Cloudflare:
+const API_URL = "https://api.healthbridge.my.id";
+
+// Atau jika belum setup domain (gunakan IP langsung):
+const API_URL = "http://BACKEND_IP:8000";  // Ganti BACKEND_IP dengan IP EC2 Backend
+```
+
+Simpan file: `Ctrl+O` → `Enter` → `Ctrl+X`
+
+### 9B.4 Install Dependencies & Build
+```bash
 # Install dependencies
 npm install
 
@@ -640,13 +658,13 @@ npm install
 npm run build
 ```
 
-### 9B.4 Copy Build ke Nginx
+### 9B.5 Copy Build ke Nginx
 ```bash
 sudo rm -rf /var/www/html/*
 sudo cp -r dist/* /var/www/html/
 ```
 
-### 9B.5 Konfigurasi Nginx
+### 9B.6 Konfigurasi Nginx
 ```bash
 sudo nano /etc/nginx/sites-available/default
 ```
@@ -676,7 +694,7 @@ server {
 }
 ```
 
-### 9B.6 Restart Nginx
+### 9B.7 Restart Nginx
 ```bash
 sudo nginx -t
 sudo systemctl restart nginx
